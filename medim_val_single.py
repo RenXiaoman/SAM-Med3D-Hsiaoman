@@ -44,11 +44,11 @@ if __name__ == "__main__":
     #     metrics=['dice'],
     #     classes=None,q
     # )
+
     metrics = compute_metrics(
         gt_path=prostate_gt_path,
         pred_path=prostate_output_path,
         metrics=['dice'],
         classes=None,
     )
-    print('nihao')
     print_computed_metrics(metrics)

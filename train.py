@@ -38,6 +38,7 @@ parser.add_argument('--checkpoint', type=str, default='ckpt/sam_med3d.pth')
 parser.add_argument('--device', type=str, default='cuda')
 parser.add_argument('--work_dir', type=str, default='work_dir')
 
+
 # train
 parser.add_argument('--num_workers', type=int, default=24)
 parser.add_argument('--gpu_ids', type=int, nargs='+', default=[0])
@@ -502,8 +503,10 @@ def main():
         torch.manual_seed(2023)
         # Load datasets
         dataloaders = get_dataloaders(args)
+
         # Build model
         model = build_model(args)
+
         # Create trainer
         trainer = BaseTrainer(model, dataloaders, args)
         # Train
@@ -534,12 +537,12 @@ def main():
 #     cleanup()
 
 
-def setup(rank, world_size):
-    # initialize the process group
-    dist.init_process_group(backend='nccl',
-                            init_method=f'tcp://127.0.0.1:{args.port}',
-                            world_size=world_size,
-                            rank=rank)
+# def setup(rank, world_size):
+#     # initialize the process group
+#     dist.init_process_group(backend='nccl',
+#                             init_method=f'tcp://127.0.0.1:{args.port}',
+#                             world_size=world_size,
+#                             rank=rank)
 
 
 def cleanup():

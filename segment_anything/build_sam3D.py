@@ -45,13 +45,14 @@ def build_sam3D_vit_b(checkpoint=None):
     )
 
 
-def build_sam3D_vit_b_ori(checkpoint=None):
+def build_sam3D_vit_b_ori(args=None, checkpoint=None):
     return _build_sam3D_ori(
         encoder_embed_dim=768,
         encoder_depth=12,
         encoder_num_heads=12,
         encoder_global_attn_indexes=[2, 5, 8, 11],
         checkpoint=checkpoint,
+        args=args,
     )
 
 
@@ -115,11 +116,12 @@ def _build_sam3D(
 
 
 def _build_sam3D_ori(
-    encoder_embed_dim,
-    encoder_depth,
-    encoder_num_heads,
-    encoder_global_attn_indexes,
-    checkpoint=None,
+        encoder_embed_dim,
+        encoder_depth,
+        encoder_num_heads,
+        encoder_global_attn_indexes,
+        checkpoint=None,
+        args=None
 ):
     prompt_embed_dim = 384
     image_size = 128
@@ -139,6 +141,7 @@ def _build_sam3D_ori(
             global_attn_indexes=encoder_global_attn_indexes,
             window_size=14,
             out_chans=prompt_embed_dim,
+            args=args,
         ),
         prompt_encoder=PromptEncoder3D(
             embed_dim=prompt_embed_dim,
@@ -152,6 +155,7 @@ def _build_sam3D_ori(
             transformer_dim=prompt_embed_dim,
             iou_head_depth=3,
             iou_head_hidden_dim=256,
+            args=args,
         ),
         pixel_mean=[123.675, 116.28, 103.53],
         pixel_std=[58.395, 57.12, 57.375],
@@ -161,4 +165,7 @@ def _build_sam3D_ori(
         with open(checkpoint, "rb") as f:
             state_dict = torch.load(f)
         sam.load_state_dict(state_dict)
+
+        # Create a new state dictionary with only the parameters that exist in the sam_med_3d model
+        new_state_dict = {k: v for k, v in state_dict.items() if k in sam.state_dict()}
     return sam

@@ -204,6 +204,7 @@ def get_next_click3D_torch_2(prev_seg, gt_semantic_seg):
     pred_masks = prev_seg > mask_threshold
     true_masks = gt_semantic_seg > 0
 
+
     # 计算假阴性(FN)和假阳性(FP)：
     fn_masks = torch.logical_and(true_masks, torch.logical_not(pred_masks))
     fp_masks = torch.logical_and(torch.logical_not(true_masks), pred_masks)
@@ -215,6 +216,7 @@ def get_next_click3D_torch_2(prev_seg, gt_semantic_seg):
 
         # 随机选择点击点
         points = torch.argwhere(to_point_mask[i])
+        # print(f'len points {len( points)}')
         point = points[np.random.randint(len(points))]
 
         # import pdb; pdb.set_trace()

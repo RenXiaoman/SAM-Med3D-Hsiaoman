@@ -65,6 +65,7 @@ class ImageEncoderViT3D(nn.Module):
             rel_pos_zero_init: bool = True,
             window_size: int = 0,
             global_attn_indexes: Tuple[int, ...] = (),
+            args=None,
     ) -> None:
         """
         Args:
@@ -102,8 +103,15 @@ class ImageEncoderViT3D(nn.Module):
                             img_size // patch_size, embed_dim))
 
         self.blocks = nn.ModuleList()
+        if args.mode =='default':
+            block_class = Block3D
+        elif args.mode =='conv':
+            pass
+        else:
+            block_class = Block3D
+
         for i in range(depth):
-            block = Block3D(
+            block = block_class(
                 dim=embed_dim,
                 num_heads=num_heads,
                 mlp_ratio=mlp_ratio,

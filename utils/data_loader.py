@@ -1,12 +1,15 @@
 import os
+from typing import Sequence
 
 import numpy as np
 import SimpleITK as sitk
 import torch
 import torchio as tio
+from monai.data import ImageDataset
 from prefetch_generator import BackgroundGenerator
 from torch.utils.data import DataLoader, Dataset
 from torchio.data.io import sitk_to_nib
+import monai
 
 
 class Dataset_Union_ALL(Dataset):
@@ -125,6 +128,26 @@ class Dataset_Union_ALL(Dataset):
                     label_path = os.path.join(path, f"labels{self.data_type}", f"{base}.nii.gz")
                     self.image_paths.append(label_path.replace("labels", "images"))
                     self.label_paths.append(label_path)
+
+
+class MultiModalityTrainDataset(ImageDataset):
+    def __init__(self,
+                 image_files: Sequence,
+                 seg_files: Sequence[str] | None = None,
+                 transforms = None,
+                 seg_transforms = None
+    ) -> None:
+        super().__init__(image_files, seg_files, transforms, seg_transforms)
+        self.image_files = image_files
+        self.seg_files = seg_files
+        self.transforms = transforms
+        self.seg_transforms = seg_transforms
+
+    def __len__(self) -> int:
+        return len(self.seg_files)
+
+    def __getitem__(self, index):
+        patient_data = self.image_files[index]
 
 
 class Dataset_Union_ALL_Val(Dataset_Union_ALL):

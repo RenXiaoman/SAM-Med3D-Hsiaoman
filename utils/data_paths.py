@@ -9,4 +9,4 @@ import os.path as osp
 from glob import glob
 
 PROJ_DIR = osp.dirname(osp.dirname(__file__))
-img_datas = glob(osp.join(PROJ_DIR, "data", "Task2203_picai_baseline"))
+img_datas = glob(osp.join(PROJ_DIR, "data", "Task205_picai_lesion"))
