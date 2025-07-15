@@ -271,7 +271,9 @@ class BaseTrainer:
         low_res_masks = F.interpolate(prev_masks.float(),
                                       size=(args.img_size // 4, args.img_size // 4,
                                             args.img_size // 4))  # 下采样至1/4大小
+
         random_insert = np.random.randint(2, 9)  # 在2~8次点击中随机选一次, 作用：强制模型在随机某一步不依赖用户点击（提升鲁棒性）。
+
         for num_click in range(num_clicks):
             points_input, labels_input = self.get_points(prev_masks, gt3D)
 

@@ -122,7 +122,7 @@ def sam_model_infer(model,
         # 4. 初始化点击点和标签
         # points_coords shape is [1, 0, 3], points_labels shape is [1, 0]
         points_coords, points_labels = torch.zeros(1, 0, 3).to(device), torch.zeros(1,0).to(device)
-        new_points_co, new_points_la = torch.Tensor([[[64, 64, 64]]]).to(device), torch.Tensor([[1]]).to(torch.int64)
+        # new_points_co, new_points_la = torch.Tensor([[[64, 64, 64]]]).to(device), torch.Tensor([[1]]).to(torch.int64)
 
         # 5. 初始化掩膜 初始化为空的掩膜，用于生成点击点时的参考掩膜。初始时设置为全零 shape is [1, 128, 128, 128]
         current_prev_mask_for_click_generation = torch.zeros_like(roi_image, device=device)[:,0,...] # Start with empty prev_mask for click [1, 1, 128, 128, 128] --> [1, 128, 128, 128]

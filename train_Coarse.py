@@ -18,6 +18,8 @@ from monai.transforms import Compose, Transform, ToTensor, EnsureTyped, EnsureCh
     ConcatItemsD, ConcatItemsd, NormalizeIntensityd, ToTensord
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
+
+from utils.infer_utils import random_sample_next_click
 from utils_our import get_network
 import SimpleITK as sitk
 
@@ -53,7 +55,7 @@ parser.add_argument('--step_size', type=list, default=[120, 180])
 parser.add_argument('--gamma', type=float, default=0.1)
 parser.add_argument('--num_epochs', type=int, default=200)
 parser.add_argument('--img_size', type=int, default=128)
-parser.add_argument('--batch_size', type=int, default=5)
+parser.add_argument('--batch_size', type=int, default=1)
 parser.add_argument('--accumulation_steps', type=int, default=20)
 parser.add_argument('--lr', type=float, default=8e-4)
 parser.add_argument('--weight_decay', type=float, default=0.1)
@@ -101,8 +103,6 @@ def get_dataloaders(args):
     assert task_dir.exists(), "Please check the path of dataset"
     imagesTr = task_dir / 'imagesTr'
     labelsTr = task_dir / 'labelsTr'
-    dataset_json = task_dir / 'dataset.json'
-    splits_json = task_dir / 'splits.json'
 
 
     ids = [item.split('.')[0] for item in os.listdir(str(labelsTr))]  # 413
@@ -177,7 +177,7 @@ def get_dataloaders(args):
         ConcatItemsd(keys=["t2w", "adc", "dwi"], name="image", dim=0),
         NormalizeIntensityd(keys=["t2w", "adc", "dwi"], nonzero=True, channel_wise=True)
     ]))
-    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False)
     return train_dataloader, val_dataloader
 
 
@@ -190,11 +190,19 @@ class BaseTrainer:
         self.args = args
         self.best_loss = np.inf
         self.best_dice = 0.0
+
+        self.best_val_dice = 0.0     # New ：Best Val DIce
+        self.best_val_loss = np.inf  # New：Best Val
+
         self.step_best_loss = np.inf
         self.step_best_dice = 0.0
         self.losses = []
         self.dices = []
+
+        self.val_dices = []  # New：Val dice record
+
         self.ious = []
+        self.val_interval = getattr(args, 'val_interval', 1)  # New : val interval parameter
         self.seg_loss = None
         self.optimizer = None
         self.lr_scheduler = None
@@ -346,6 +354,98 @@ class BaseTrainer:
             return_loss += loss
         return prev_masks, return_loss
 
+
+    @torch.no_grad()
+    def val_epoch(self, epoch, num_clicks=1):
+        # infer one by one , batch size is 1 ! !
+        self.model.eval()
+        sam_model = self.model
+
+        epoch_dice = 0.
+
+        tbar = tqdm(self.val_dataloader, desc=f'VAL {epoch}')
+
+        for data3D in tbar:
+            # ─── 数据取出 ───────────────────────────────
+            t2w = data3D["t2w"].to(device)
+            adc = data3D["adc"].to(device)
+            dwi = data3D["dwi"].to(device)
+            gt3D = data3D["mask"].to(device)
+
+            if gt3D is not None and (gt3D == 0).all() and num_clicks > 0:
+                print("Warning: roi_gt is empty. Prediction will be empty.")
+                return np.zeros_like(t2w.cpu().numpy()), None  # Return None for low_res_mask
+
+            with torch.amp.autocast("cuda"):
+                # ─── 前向提取特征 ──────────────────────
+                t2w_embed = sam_model.image_encoder(t2w)
+                adc_embed = sam_model.image_encoder(adc)
+                dwi_embed = sam_model.image_encoder(dwi)
+                image_embeddings = sam_model.feature_fusion(t2w_embed, adc_embed, dwi_embed)
+
+                points_coords, points_labels = torch.zeros(1, 0, 3).to(device), torch.zeros(1, 0).to(device)
+
+                # Start with empty prev_mask for click [1, 1, 128, 128, 128] --> [1, 128, 128, 128]
+                current_prev_mask_for_click_generation = torch.zeros_like(t2w, device=device)[:, 0, ...]
+                prev_low_res_mask = torch.zeros(1, 1, # similar to current_prev_mask_for_click_generation // 4
+                                                t2w.shape[2] // 4,  # [1, 1, 32, 32, 32]
+                                                t2w.shape[3] // 4,
+                                                t2w.shape[4] // 4, device=device, dtype=torch.float)
+
+                for _ in range(num_clicks):
+                    new_points_co, new_points_la = random_sample_next_click(
+                        current_prev_mask_for_click_generation.squeeze(0).cpu(),  # Expects HWD tensor
+                        gt3D[0, 0].cpu()  # Expects HWD tensor
+                    )
+                    new_points_co, new_points_la = new_points_co.to(device), new_points_la.to(device)
+                    points_coords = torch.cat([points_coords, new_points_co], dim=1)
+                    points_labels = torch.cat([points_labels, new_points_la], dim=1)
+
+                    sparse_embeddings, dense_embeddings = sam_model.prompt_encoder(
+                        points=[points_coords, points_labels],
+                        boxes=None,
+                        masks=prev_low_res_mask,
+                    )
+
+                    # 10. 掩膜解码和更新低分辨率掩膜
+                    low_res_masks, _ = sam_model.mask_decoder(
+                        image_embeddings=image_embeddings,
+                        image_pe=sam_model.prompt_encoder.get_dense_pe(),
+                        sparse_prompt_embeddings=sparse_embeddings,
+                        dense_prompt_embeddings=dense_embeddings,
+                        multimask_output=False,
+                    )
+                    # Update prev_low_res_mask for next iteration's prompt encoder input
+                    prev_low_res_mask = low_res_masks.detach()
+
+                    # For click generation, use the upscaled version of the current prediction
+                    current_prev_mask_for_click_generation = F.interpolate(low_res_masks,
+                                                                           size=t2w.shape[-3:],
+                                                                           mode='trilinear',
+                                                                           align_corners=False)
+                    current_prev_mask_for_click_generation = torch.sigmoid(current_prev_mask_for_click_generation) > 0.5
+
+                    # 11. 生成最终的高分辨率掩膜
+                    # Final high-resolution mask from the last low_res_masks
+                final_masks_hr = F.interpolate(low_res_masks,  # Use the final low_res_masks
+                                               size=t2w.shape[-3:],
+                                               mode='trilinear',
+                                               align_corners=False)
+
+                medsam_seg_prob = torch.sigmoid(final_masks_hr)
+                medsam_seg_prob = medsam_seg_prob.cpu().numpy().squeeze()
+                medsam_seg_mask = (medsam_seg_prob > 0.5).astype(np.uint8)  # (128, 128, 128)
+                new_mask = np.expand_dims(np.expand_dims(medsam_seg_mask, axis=0), axis=0)
+
+                epoch_dice += self.get_dice_score(new_mask, gt3D)
+
+        print(f'Val EPOCH: {epoch},  Val Dice: {epoch_dice / len(self.val_dataloader):.4f}')
+        logger.info(f'Val Epoch\t {epoch}\t :  val dice: {epoch_dice / len(self.val_dataloader):.4f}')
+        return round(epoch_dice / len(self.val_dataloader), 4)
+
+
+
+
     def train_epoch(self, epoch, num_clicks):
         epoch_loss = 0
         epoch_iou = 0
@@ -399,6 +499,7 @@ class BaseTrainer:
 
                     print_loss = step_loss / self.args.accumulation_steps
                     step_loss = 0
+                    # print(f'prev_masks shape is {prev_masks.shape}, gt3D shape is {gt3D.shape}')
                     print_dice = self.get_dice_score(prev_masks, gt3D)
                 else:
                     step_loss += cur_loss
@@ -407,12 +508,13 @@ class BaseTrainer:
                     print(f'Epoch: {epoch}, Step: {step}, Loss: {print_loss}, Dice: {print_dice}')
                     if print_dice > self.step_best_dice:
                         self.step_best_dice = print_dice
-                        if print_dice > 0.9:
+                        if print_dice > 0.5:
                             self.save_checkpoint(epoch,
                                                  sam_model.state_dict(),
                                                  describe=f'{epoch}_step_dice:{print_dice}_best')
                     if print_loss < self.step_best_loss:
                         self.step_best_loss = print_loss
+
 
         epoch_loss /= step + 1
         epoch_dice /= step + 1
@@ -428,6 +530,15 @@ class BaseTrainer:
         plt.savefig(join(MODEL_SAVE_PATH, f'{save_name}.png'))
         plt.close()
 
+    def plot_result_mix(self, plot_data1, plot_data2, label1, label2, description, save_name):
+        plt.plot(plot_data1, label=label1)
+        plt.plot(plot_data2, label=label2)
+        plt.title(description)
+        plt.xlabel('Epoch')
+        plt.ylabel(f'{save_name}')
+        plt.savefig(join(str(MODEL_SAVE_PATH), f'{save_name}.png'))
+        plt.close()
+
 
     def train(self):
         self.scaler = torch.amp.GradScaler("cuda")
@@ -436,6 +547,9 @@ class BaseTrainer:
             for p in self.model.parameters():
                 p.requires_grad = False
 
+            # train encoder weights
+            for p in self.model.image_encoder.parameters():
+                p.requires_grad = True
 
             for p in self.model.feature_fusion.parameters():
                 p.requires_grad = True
@@ -444,6 +558,7 @@ class BaseTrainer:
 
         model_total_params = sum(p.numel() for p in self.model.parameters())
         model_grad_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+
         print(
             "Total params: {0}M\t Gradient Parameters: {1}M".format(model_total_params / 1e6,
                                                                     model_grad_params / 1e6))
@@ -459,9 +574,14 @@ class BaseTrainer:
             self.losses.append(epoch_loss)
             self.dices.append(epoch_dice)
 
-            print(f'EPOCH: {epoch}, Loss: {epoch_loss}')
-            print(f'EPOCH: {epoch}, Dice: {epoch_dice}')
+            print(f'EPOCH: {epoch}, Loss: {epoch_loss}  Dice: {epoch_dice}')
             logger.info(f'Epoch\t {epoch}\t : loss: {epoch_loss}, dice: {epoch_dice}')
+
+            # New: Validating val dataset at {parameter} interval
+            if (epoch + 1) % self.val_interval == 0:
+                print_val_dice = self.val_epoch(epoch, num_clicks=num_clicks)
+                self.val_dices.append(print_val_dice)
+
 
             state_dict = self.model.state_dict()
 
@@ -479,7 +599,10 @@ class BaseTrainer:
                 self.save_checkpoint(epoch, state_dict, describe='dice_best')
 
             self.plot_result(self.losses, 'Dice + Cross Entropy Loss', 'Loss')
-            self.plot_result(self.dices, 'Dice', 'Dice')
+            self.plot_result_mix(self.dices, self.val_dices, 'Train_Dice', 'Val_Dice',
+                                 'Total Dice', 'Dice')
+            # self.plot_result(self.dices, 'Dice', 'Dice')
+            # self.plot_result(self.val_dices, 'Val Dice', 'Val_Dice')
 
         logger.info('=====================================================================')
         logger.info(f'Best loss: {self.best_loss}')
@@ -506,10 +629,6 @@ def main():
     # Build model
     ckpt_path = "/home/lib/PycharmProjects/SAM-Med3D/ckpt/sam_med3d_turbo.pth"
     net = get_network(args=args, use_gpu=True)
-
-    # model_total_params = sum(p.numel() for p in net.parameters())
-    # model_grad_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
-    # print("Total params: {0}M\t Gradient Parameters: {1}M".format(model_total_params / 1e5, model_grad_params / 1e6))
 
     print("Using", torch.cuda.device_count(), "GPUs!")
     print(" ============================================= ")
