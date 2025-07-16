@@ -7,7 +7,8 @@ import SimpleITK as sitk
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
-from monai.transforms import Compose, ToTensord, EnsureTyped, NormalizeIntensityd, Transform
+from monai.transforms import Compose, ToTensord, EnsureTyped, NormalizeIntensityd, Transform, ConcatItemsd, \
+    ScaleIntensityRangePercentilesd, ClipIntensityPercentiles, ClipIntensityPercentilesD
 from monai.visualize import matshow3d
 from tqdm import tqdm
 
@@ -61,6 +62,8 @@ class TorchIOCropOrPadTransform(Transform):
     def __call__(self, data):
         subject = tio.Subject(
             t2w=tio.ScalarImage(tensor=data["t2w"]),
+            adc=tio.ScalarImage(tensor=data["adc"]),
+            dwi=tio.ScalarImage(tensor=data["dwi"]),
             mask=tio.LabelMap(tensor=data["mask"]),
         )
 
@@ -68,33 +71,55 @@ class TorchIOCropOrPadTransform(Transform):
 
         return {
             "t2w": out["t2w"].data,    # torch.Tensor, shape: (1, D, H, W)
+            "adc": out["adc"].data,
+            "dwi": out["dwi"].data,
             "mask": out["mask"].data,
         }
 
 
 transform=Compose([
-        lambda data: {  # -- 1
-            "t2w": sitk.GetArrayFromImage(sitk.ReadImage(data["t2w"]))[None, :, :, :],
-            "mask": sitk.GetArrayFromImage(sitk.ReadImage(data["mask"]))[None, :, :, :],
-        },
-        ToTensord(keys=["t2w", "mask",]),  # -- 2
-        TorchIOCropOrPadTransform(),
-        EnsureTyped(keys=["t2w"], dtype=torch.float),
-        EnsureTyped(keys=["mask"], dtype=torch.long),
-        # # ConcatItemsd(keys=["t2w", "adc", "dwi"], name="image", dim=0),
-        NormalizeIntensityd(keys=["t2w"], nonzero=True, channel_wise=True)
+    lambda data: {  # -- 1
+        "t2w": sitk.GetArrayFromImage(sitk.ReadImage(data["t2w"]))[None, :, :, :],
+        "adc": sitk.GetArrayFromImage(sitk.ReadImage(data["adc"]))[None, :, :, :],
+        "dwi": sitk.GetArrayFromImage(sitk.ReadImage(data["dwi"]))[None, :, :, :],
+        "mask": sitk.GetArrayFromImage(sitk.ReadImage(data["mask"]))[None, :, :, :],
+    },
+    ToTensord(keys=["t2w", "adc", "dwi", "mask",]),  # -- 2
+    TorchIOCropOrPadTransform(),
+    EnsureTyped(keys=["t2w", "adc", "dwi"], dtype=torch.float),
+    EnsureTyped(keys=["mask"], dtype=torch.long),
+    # ConcatItemsd(keys=["t2w", "adc", "dwi"], name="image", dim=0),
+    ClipIntensityPercentilesD(
+        keys=["t2w", "adc", "dwi"],
+        lower=0.5, upper=99.5,  # 0.5–99.5 百分位
+        sharpness_factor=None,  # None=硬裁剪
+        channel_wise=True  # 每通道单独计算百分位
+    ),
+    NormalizeIntensityd(keys=["t2w", "adc", "dwi"], nonzero=True, channel_wise=False),
     ])
 
 
 t2w =   '/home/lib/PycharmProjects/SAM-Med3D/data/Task205_picai_lesion/imagesTr/10140_1000142_0000.nii.gz'
+adc =  '/home/lib/PycharmProjects/SAM-Med3D/data/Task205_picai_lesion/imagesTr/10140_1000142_0001.nii.gz'
+dwi =  '/home/lib/PycharmProjects/SAM-Med3D/data/Task205_picai_lesion/imagesTr/10140_1000142_0002.nii.gz'
 label = '/home/lib/PycharmProjects/SAM-Med3D/data/Task205_picai_lesion/labelsTr/10140_1000142.nii.gz'
-label_npy = sitk.GetArrayFromImage(sitk.ReadImage(label))
+
+label_npy = sitk.GetArrayFromImage(sitk.ReadImage(t2w))
 print(f'未经transform之前，最大值为{np.max(label_npy)}')
-data = {"t2w": t2w, "mask": label}
+
+
+################# Transforming ################
+data = {"t2w": t2w,
+        "adc": adc,
+        "dwi": dwi,
+        "mask": label}
 output = transform(data)
 t2w_t = output["t2w"]
 mask_t = output["mask"]
-print(f'经过transform之后，最大值为{torch.max(mask_t)}')
+################# Transforming ################
+
+
+print(f'经过transform之后，最大值为{torch.max(t2w_t)}')
 
 print(mask_t.shape)
 #

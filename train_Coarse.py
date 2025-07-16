@@ -14,33 +14,38 @@ from monai.losses import DiceCELoss
 import matplotlib.pyplot as plt
 from monai.visualize import matshow3d
 import torch.nn.functional as F
-from monai.transforms import Compose, Transform, ToTensor, EnsureTyped, EnsureChannelFirstd, AddChannel, AddChanneld, \
-    ConcatItemsD, ConcatItemsd, NormalizeIntensityd, ToTensord
+from monai.transforms import (Compose, Transform, EnsureTyped,
+                              ConcatItemsd, NormalizeIntensityd, ToTensord, ClipIntensityPercentilesD)
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
-
+from segment_anything.Ours.common import loralib as lora
 from utils.infer_utils import random_sample_next_click
 from utils_our import get_network
 import SimpleITK as sitk
 
-from segment_anything.Ours.Coarse import SAM_Coarse_Seg
 import torch
-import torch.nn as nn
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message=r"Using TorchIO images without a torchio\.SubjectsLoader.*",
+    category=UserWarning,
+    module=r"torchio\.data\.image"
+)
+
 
 from utils.click_method import get_next_click3D_torch_2
-from utils.data_loader import Dataset_Union_ALL, Union_Dataloader, MultiModalityTrainDataset
 from utils.data_paths import img_datas
 
 # #######    Set up parser
 parser = argparse.ArgumentParser()
-parser.add_argument('--task_name', type=str, default='union_train')
+parser.add_argument('--task_name', type=str, default='adalora_try_2_try')
 parser.add_argument('--click_type', type=str, default='random')
 parser.add_argument('--multi_click', action='store_true', default=False)
 parser.add_argument('--model_type', type=str, default='vit_b_ori')
 parser.add_argument('--checkpoint', type=str, default='ckpt/sam_med3d.pth')
 parser.add_argument('--device', type=str, default='cuda:0')
 parser.add_argument('--work_dir', type=str, default='work_dir')
-parser.add_argument('--mode', type=str, default='default')
+parser.add_argument('--mode', type=str, default='sam_adalora')
 
 # train
 parser.add_argument('--num_workers', type=int, default=16)
@@ -156,8 +161,14 @@ def get_dataloaders(args):
         TorchIOCropOrPadTransform(),
         EnsureTyped(keys=["t2w", "adc", "dwi"], dtype=torch.float),
         EnsureTyped(keys=["mask", "id"], dtype=torch.long),
-        ConcatItemsd(keys=["t2w", "adc", "dwi"], name="image", dim=0),
-        NormalizeIntensityd(keys=["t2w", "adc", "dwi"], nonzero=True, channel_wise=True)
+        # ConcatItemsd(keys=["t2w", "adc", "dwi"], name="image", dim=0),
+        ClipIntensityPercentilesD(
+            keys=["t2w", "adc", "dwi"],
+            lower=0.5, upper=99.5,  # 0.5–99.5 percentiles
+            sharpness_factor=None,
+            channel_wise=False
+        ),
+        NormalizeIntensityd(keys=["t2w", "adc", "dwi"], nonzero=True, channel_wise=False),
     ]))
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
 
@@ -174,7 +185,13 @@ def get_dataloaders(args):
         TorchIOCropOrPadTransform(),
         EnsureTyped(keys=["t2w", "adc", "dwi"], dtype=torch.float),
         EnsureTyped(keys=["mask", "id"], dtype=torch.long),
-        ConcatItemsd(keys=["t2w", "adc", "dwi"], name="image", dim=0),
+        # ConcatItemsd(keys=["t2w", "adc", "dwi"], name="image", dim=0),
+        ClipIntensityPercentilesD(
+            keys=["t2w", "adc", "dwi"],
+            lower=0.5, upper=99.5,  # 0.5–99.5 percentiles
+            sharpness_factor=None,
+            channel_wise=False
+        ),
         NormalizeIntensityd(keys=["t2w", "adc", "dwi"], nonzero=True, channel_wise=True)
     ]))
     val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False)
@@ -488,6 +505,11 @@ class BaseTrainer:
                 epoch_dice += self.get_dice_score(prev_masks, gt3D)
                 cur_loss = loss.item()
 
+                # ------- LoRA orthogonal regularization
+                if self.args.mode == 'sam_adalora':
+                    ortho_reg = lora.compute_orth_regu(sam_model, regu_weight=0.1)
+                    loss = loss + ortho_reg
+
                 loss /= self.args.accumulation_steps
 
                 self.scaler.scale(loss).backward()
@@ -495,6 +517,10 @@ class BaseTrainer:
                 if step % self.args.accumulation_steps == 0 and step != 0:
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
+
+                    if self.args.mode == 'sam_adalora':
+                        self.rankallocator.update_and_mask(self.model.image_encoder, global_step=step)
+
                     self.optimizer.zero_grad()
 
                     print_loss = step_loss / self.args.accumulation_steps
@@ -553,8 +579,30 @@ class BaseTrainer:
 
             for p in self.model.feature_fusion.parameters():
                 p.requires_grad = True
-        elif self.args.mode == 'conv_fusion':
-            pass
+        elif self.args.mode == 'sam_adapter':
+            for n, value in self.model.named_parameters():
+                if 'Adapter' not in n:
+                    value.requires_grad = False
+                else:
+                    value.requires_grad = True
+        elif self.args.mode == 'sam_adalora':
+
+            lora.mark_only_lora_as_trainable(self.model.image_encoder)
+            # Initialize the RankAllocator
+            self.rankallocator = lora.RankAllocator(
+                self.model.image_encoder,
+                lora_r=4,
+                target_rank=8,
+                init_warmup=500,
+                final_warmup=1500,
+                mask_interval=10,
+                total_step=self.args.num_epochs * len(self.dataloaders),
+                beta1=0.85,
+                beta2=0.85
+            )
+        else:
+            for n, value in self.model.named_parameters():
+                value.requires_grad = True
 
         model_total_params = sum(p.numel() for p in self.model.parameters())
         model_grad_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
@@ -565,6 +613,7 @@ class BaseTrainer:
 
         for epoch in range(self.start_epoch, self.args.num_epochs):
             print(f'Epoch: {epoch}/{self.args.num_epochs - 1}')
+
 
             ################### Train #################
             num_clicks = np.random.randint(1, 21)  # 实际未参与train

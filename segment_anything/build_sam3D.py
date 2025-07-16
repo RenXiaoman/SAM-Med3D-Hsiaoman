@@ -168,4 +168,5 @@ def _build_sam3D_ori(
 
         # Create a new state dictionary with only the parameters that exist in the sam_med_3d model
         new_state_dict = {k: v for k, v in state_dict.items() if k in sam.state_dict()}
+        sam.load_state_dict(new_state_dict, strict=False)
     return sam
