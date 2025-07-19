@@ -3,10 +3,24 @@
   <component name="PublishConfigData" autoUpload="Always" serverName="lib@192.168.1.134:22 password" remoteFilesAllowedToDisappearOnAutoupload="false" confirmBeforeUploading="false">
     <option name="confirmBeforeUploading" value="false" />
     <serverData>
+      <paths name="lib@10.7.27.180:22 password">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/lib/PycharmProjects/SAM-Med3D" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
       <paths name="lib@192.168.1.134:22 password">
         <serverdata>
           <mappings>
             <mapping deploy="/home/lib/PycharmProjects/SAM-Med3D" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="lib@47.109.34.141:9999 password">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/lib/PycharmProjects/SAM-Med3D" local="$PROJECT_DIR$" />
           </mappings>
         </serverdata>
       </paths>

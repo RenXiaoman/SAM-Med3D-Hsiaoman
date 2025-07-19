@@ -130,11 +130,12 @@ class Attention(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, D, H, W, _ = x.shape
-        # qkv with shape (3, B, nHead, H * W, C)
+        # qkv with shape (3, B, nHead, H * W * D, C)
         qkv = self.qkv(x).reshape(B, D * H * W, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
-        # q, k, v with shape (B * nHead, H * W, C)
+        # q, k, v with shape (B * nHead, H * W * D, C)
         q, k, v = qkv.reshape(3, B * self.num_heads, D * H * W, -1).unbind(0)
 
+        # each shape is [B * nHead, H * W * D, C]
         attn = (q * self.scale) @ k.transpose(-2, -1)
 
         if self.use_rel_pos:

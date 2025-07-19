@@ -562,6 +562,7 @@ class BaseTrainer:
         plt.title(description)
         plt.xlabel('Epoch')
         plt.ylabel(f'{save_name}')
+        plt.legend(loc='best')
         plt.savefig(join(str(MODEL_SAVE_PATH), f'{save_name}.png'))
         plt.close()
 

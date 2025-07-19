@@ -13,7 +13,7 @@ from torch.nn import functional as F
 from .image_encoder3D import ImageEncoderViT3D
 from .mask_decoder3D import MaskDecoder3D
 from .prompt_encoder3D import PromptEncoder3D
-from ..Ours.feature_research import SEAttention3D
+from ..Ours.common.fusion import SEAttention3D
 
 
 class Sam3D(nn.Module):
