@@ -38,14 +38,14 @@ from utils.data_paths import img_datas
 
 # #######    Set up parser
 parser = argparse.ArgumentParser()
-parser.add_argument('--task_name', type=str, default='adalora_try_2_try')
+parser.add_argument('--task_name', type=str, default='adalora_new_fusion')
 parser.add_argument('--click_type', type=str, default='random')
 parser.add_argument('--multi_click', action='store_true', default=False)
 parser.add_argument('--model_type', type=str, default='vit_b_ori')
 parser.add_argument('--checkpoint', type=str, default='ckpt/sam_med3d.pth')
 parser.add_argument('--device', type=str, default='cuda:0')
 parser.add_argument('--work_dir', type=str, default='work_dir')
-parser.add_argument('--mode', type=str, default='sam_adalora')
+parser.add_argument('--mode', type=str, default='sam_adalora', choices=['default', 'sam_adapter', 'sam_adalora', 'full'])
 
 # train
 parser.add_argument('--num_workers', type=int, default=16)
@@ -58,7 +58,7 @@ parser.add_argument('--allow_partial_weight', action='store_true', default=False
 parser.add_argument('--lr_scheduler', type=str, default='multisteplr')
 parser.add_argument('--step_size', type=list, default=[120, 180])
 parser.add_argument('--gamma', type=float, default=0.1)
-parser.add_argument('--num_epochs', type=int, default=200)
+parser.add_argument('--num_epochs', type=int, default=300)
 parser.add_argument('--img_size', type=int, default=128)
 parser.add_argument('--batch_size', type=int, default=1)
 parser.add_argument('--accumulation_steps', type=int, default=20)
@@ -398,6 +398,11 @@ class BaseTrainer:
                 t2w_embed = sam_model.image_encoder(t2w)
                 adc_embed = sam_model.image_encoder(adc)
                 dwi_embed = sam_model.image_encoder(dwi)
+
+                t2w_msb_embeddings = sam_model.MSCB_extraction(t2w_embed)  # [B, 384, 8, 8, 8]
+                adc_msb_embeddings = sam_model.MSCB_extraction(adc_embed)
+                dwi_msb_embeddings = sam_model.MSCB_extraction(dwi_embed)
+
                 image_embeddings = sam_model.feature_fusion(t2w_embed, adc_embed, dwi_embed)
 
                 points_coords, points_labels = torch.zeros(1, 0, 3).to(device), torch.zeros(1, 0).to(device)
@@ -487,9 +492,19 @@ class BaseTrainer:
                 adc_image_embeddings = sam_model.image_encoder(adc)
                 dwi_image_embeddings = sam_model.image_encoder(dwi)
 
-                image_embedding = sam_model.feature_fusion(t2w_image_embeddings,
-                                                            adc_image_embeddings,
-                                                            dwi_image_embeddings)
+                t2w_msb_embeddings = sam_model.MSCB_extraction(t2w_image_embeddings)  # [B, 384, 8, 8, 8]
+                adc_msb_embeddings = sam_model.MSCB_extraction(adc_image_embeddings)
+                dwi_msb_embeddings = sam_model.MSCB_extraction(dwi_image_embeddings)
+
+                # [B, 384, 8, 8, 8]
+                image_embedding = sam_model.feature_fusion(t2w_msb_embeddings, 
+                                                    adc_msb_embeddings,
+                                                    dwi_msb_embeddings)
+                
+                # t2w_f_z = torch.cat([t2w_msb_embeddings, out_fuse], dim=1)  
+                # adc_f_z = torch.cat([adc_msb_embeddings, out_fuse], dim=1)
+                # dwi_f_z = torch.cat([dwi_msb_embeddings, out_fuse], dim=1)
+
 
                 self.click_points = []
                 self.click_labels = []
@@ -580,6 +595,8 @@ class BaseTrainer:
 
             for p in self.model.feature_fusion.parameters():
                 p.requires_grad = True
+
+
         elif self.args.mode == 'sam_adapter':
             for n, value in self.model.named_parameters():
                 if 'Adapter' not in n:
@@ -587,6 +604,17 @@ class BaseTrainer:
                 else:
                     value.requires_grad = True
         elif self.args.mode == 'sam_adalora':
+            # Frozen SAM-Med3D parameters
+            # for p in self.model.prompt_encoder.parameters():
+            #     p.requires_grad = False
+            # for p in self.model.mask_decoder.parameters():
+            #     p.requires_grad = False
+
+            # for p in self.model.mask_decoder.parameters():
+            #     p.requires_grad = False
+
+            for p in self.model.MSCB_extraction.parameters():
+                p.requires_grad = True
 
             lora.mark_only_lora_as_trainable(self.model.image_encoder)
             # Initialize the RankAllocator
@@ -601,9 +629,17 @@ class BaseTrainer:
                 beta1=0.85,
                 beta2=0.85
             )
-        else:
+
+            
+
+            
+        elif self.args.mode == 'full':
             for n, value in self.model.named_parameters():
                 value.requires_grad = True
+        else:
+            # for n, value in self.model.named_parameters():
+            #     value.requires_grad = True
+            raise ValueError(f"Invalid mode: {self.args.mode}. Please choose from ['default', 'sam_adapter', 'sam_adalora', 'full']")
 
         model_total_params = sum(p.numel() for p in self.model.parameters())
         model_grad_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
@@ -627,6 +663,7 @@ class BaseTrainer:
             print(f'EPOCH: {epoch}, Loss: {epoch_loss}  Dice: {epoch_dice}')
             logger.info(f'Epoch\t {epoch}\t : loss: {epoch_loss}, dice: {epoch_dice}')
 
+            # ################### Val #################
             # New: Validating val dataset at {parameter} interval
             if (epoch + 1) % self.val_interval == 0:
                 print_val_dice = self.val_epoch(epoch, num_clicks=num_clicks)

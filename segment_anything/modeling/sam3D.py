@@ -13,7 +13,7 @@ from torch.nn import functional as F
 from .image_encoder3D import ImageEncoderViT3D
 from .mask_decoder3D import MaskDecoder3D
 from .prompt_encoder3D import PromptEncoder3D
-from ..Ours.common.fusion import SEAttention3D
+from ..Ours.common.fusion import FusionLayer, MultiScaleConvBlock, SEAttention3D
 
 
 class Sam3D(nn.Module):
@@ -50,15 +50,13 @@ class Sam3D(nn.Module):
         #     nn.Conv3d(384 * 3, 384, kernel_size=3, padding=1),
         #     nn.ReLU()
         # )
-        self.feature_fusion = SEAttention3D(channel=384, reduction=16)
+        self.MSCB_extraction = MultiScaleConvBlock(
+            in_channels=384, 
+            out_channels=384, 
+            mscb_layers=3)
+        
+        self.feature_fusion = FusionLayer(in_channel=384, outChans=384, act='relu')
 
-        # Fine-tuning parameters
-        # for p in self.parameters():
-        #     p.requires_grad = False
-        #
-        # # Frozen SAM-Med3D parameters
-        # for p in self.feature_fusion.parameters():
-        #     p.requires_grad = True
 
     @property
     def device(self) -> Any:

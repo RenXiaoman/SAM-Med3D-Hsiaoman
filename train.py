@@ -45,6 +45,7 @@ parser.add_argument('--gpu_ids', type=int, nargs='+', default=[0])
 parser.add_argument('--multi_gpu', action='store_true', default=False)
 parser.add_argument('--resume', action='store_true', default=False)
 parser.add_argument('--allow_partial_weight', action='store_true', default=False)
+parser.add_argument('--mode', type=str, default='sam_adalora')
 
 # lr_scheduler
 parser.add_argument('--lr_scheduler', type=str, default='multisteplr')
