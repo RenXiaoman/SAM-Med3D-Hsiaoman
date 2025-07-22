@@ -403,7 +403,7 @@ class BaseTrainer:
                 adc_msb_embeddings = sam_model.MSCB_extraction(adc_embed)
                 dwi_msb_embeddings = sam_model.MSCB_extraction(dwi_embed)
 
-                image_embeddings = sam_model.feature_fusion(t2w_embed, adc_embed, dwi_embed)
+                image_embeddings = sam_model.feature_fusion(t2w_msb_embeddings, adc_msb_embeddings, dwi_msb_embeddings)
 
                 points_coords, points_labels = torch.zeros(1, 0, 3).to(device), torch.zeros(1, 0).to(device)
 
